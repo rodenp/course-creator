@@ -46,7 +46,7 @@ interface ExtensionsProps {
 
 export function Extensions({ onBack }: ExtensionsProps) {
   const { t } = useTranslation();
-  const { isConfigured: isStripeConfigured, isTestMode, configureStripe, loading } = useStripe();
+  const { isConfigured: isStripeConfigured, isTestMode: currentTestMode, configureStripe, loading } = useStripe();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [showStripeConfig, setShowStripeConfig] = useState(false);
 

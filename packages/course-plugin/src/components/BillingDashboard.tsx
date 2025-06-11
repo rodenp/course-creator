@@ -599,7 +599,7 @@ export function BillingDashboard({ onClose, onNavigateToExtensions }: BillingDas
                 <CardContent>
                   <div className="space-y-4">
                     {coursePayments.slice(0, 5).map((payment) => (
-                      <div key={payment.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div key={payment.id} className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50">
                         <div className="flex items-center gap-3">
                           <div className="h-10 w-10 bg-blue-100 rounded-lg flex items-center justify-center">
                             <BookOpen className="h-5 w-5 text-blue-600" />
@@ -614,6 +614,11 @@ export function BillingDashboard({ onClose, onNavigateToExtensions }: BillingDas
                         <div className="text-right">
                           <div className="font-medium">{formatCurrency(payment.amount)}</div>
                           {getPaymentStatusBadge(payment.status)}
+                          {payment.stripePaymentId && (
+                            <div className="text-xs text-gray-500 mt-1">
+                              {payment.stripePaymentId}
+                            </div>
+                          )}
                         </div>
                       </div>
                     ))}
