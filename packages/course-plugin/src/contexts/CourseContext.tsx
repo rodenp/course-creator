@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useReducer, useEffect, useCallback, type ReactNode } from 'react';
 import type { Course, LessonLibraryItem, CourseTemplate, ViewMode } from '@/types';
-import { storageService } from '@/utils/storage';
+// Removed global storageService import, will use prop instead
+// import { storageService } from '@/utils/storage';
+import { StorageService } from '@/utils/storage'; // Import the class for type annotation
 import { analytics } from '@/utils/analytics';
 
 interface CourseState {
@@ -73,36 +75,31 @@ function courseReducer(state: CourseState, action: CourseAction): CourseState {
 }
 
 interface CourseContextType extends CourseState {
-  // Course operations
   loadCourses: () => Promise<void>;
-  createCourse: (course: Omit<Course, 'id' | 'createdAt' | 'updatedAt'>) => Promise<Course>;
+  createCourse: (course: Omit<Course, 'id' | 'createdAt' | 'updatedAt' | 'authorId'>, authorId: string) => Promise<Course>;
   updateCourse: (course: Course) => Promise<void>;
   deleteCourse: (id: string) => Promise<void>;
-  cloneCourse: (id: string) => Promise<Course>;
+  cloneCourse: (id: string, authorId: string) => Promise<Course>;
   loadCourse: (id: string) => Promise<void>;
-
-  // View mode
   setViewMode: (mode: ViewMode) => void;
-
-  // Lesson Library
   loadLessonLibrary: () => Promise<void>;
   addToLessonLibrary: (lesson: LessonLibraryItem) => Promise<void>;
-
-  // Templates
   loadTemplates: () => Promise<void>;
-  saveAsTemplate: (courseId: string, name: string, description: string) => Promise<void>;
-
-  // Import/Export
+  saveAsTemplate: (courseId: string, name: string, description: string, authorId: string) => Promise<void>;
   exportCourse: (courseId: string) => Promise<string>;
-  importCourse: (courseData: string) => Promise<Course>;
-
-  // Utility
-  generateId: () => string;
+  importCourse: (courseData: string, authorId: string) => Promise<Course>;
+  // generateId removed as it's backend's responsibility
 }
 
 const CourseContext = createContext<CourseContextType | undefined>(undefined);
 
-export function CourseProvider({ children }: { children: ReactNode }) {
+interface CourseProviderProps {
+  children: ReactNode;
+  storageService: StorageService; // Instance passed as prop
+  userId: string; // User ID for authorship
+}
+
+export function CourseProvider({ children, storageService, userId }: CourseProviderProps) {
   const [state, dispatch] = useReducer(courseReducer, initialState);
 
   const loadCourses = useCallback(async () => {
@@ -115,24 +112,19 @@ export function CourseProvider({ children }: { children: ReactNode }) {
     } finally {
       dispatch({ type: 'SET_LOADING', payload: false });
     }
-  }, []);
+  }, [storageService]);
 
-  const createCourse = async (courseData: Omit<Course, 'id' | 'createdAt' | 'updatedAt'>): Promise<Course> => {
+  // Modified to accept authorId
+  const createCourse = async (courseData: Omit<Course, 'id' | 'createdAt' | 'updatedAt' | 'authorId'>, authorId: string): Promise<Course> => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
-      const course: Course = {
-        ...courseData,
-        id: storageService.generateId(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+      // Backend will handle ID, createdAt, updatedAt. authorId is passed.
+      const coursePayload = { ...courseData, authorId };
 
-      const savedCourse = await storageService.saveCourse(course);
+      // Type assertion needed if backend expects full Course object but frontend sends partial for creation
+      const savedCourse = await storageService.saveCourse(coursePayload as Course);
       dispatch({ type: 'ADD_COURSE', payload: savedCourse });
-
-      // Track analytics
       analytics.trackCourseCreated(savedCourse);
-
       return savedCourse;
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to create course' });
@@ -145,27 +137,25 @@ export function CourseProvider({ children }: { children: ReactNode }) {
   const updateCourse = useCallback(async (course: Course) => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
-      const updatedCourse = { ...course, updatedAt: new Date() };
-      await storageService.saveCourse(updatedCourse);
-      dispatch({ type: 'UPDATE_COURSE', payload: updatedCourse });
-
-      // Track analytics
-      analytics.trackCourseUpdated(updatedCourse, ['content_updated']);
+      const updatedCourseData = { ...course, updatedAt: new Date() };
+      // Assuming ownership/permissions are checked by the backend via API route
+      await storageService.saveCourse(updatedCourseData);
+      dispatch({ type: 'UPDATE_COURSE', payload: updatedCourseData });
+      analytics.trackCourseUpdated(updatedCourseData, ['content_updated']);
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to update course' });
     } finally {
       dispatch({ type: 'SET_LOADING', payload: false });
     }
-  }, []);
+  }, [storageService]);
 
   const deleteCourse = async (id: string) => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
-      const courseToDelete = await storageService.getCourse(id);
+      const courseToDelete = await storageService.getCourse(id); // To get title for analytics
+      // Assuming ownership/permissions are checked by the backend via API route
       await storageService.deleteCourse(id);
       dispatch({ type: 'DELETE_COURSE', payload: id });
-
-      // Track analytics
       if (courseToDelete) {
         analytics.trackCourseDeleted(id, courseToDelete.title);
       }
@@ -176,21 +166,22 @@ export function CourseProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const cloneCourse = async (id: string): Promise<Course> => {
+  // Modified to accept authorId for the new cloned course
+  const cloneCourse = async (id: string, authorId: string): Promise<Course> => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
       const originalCourse = await storageService.getCourse(id);
       if (!originalCourse) throw new Error('Course not found');
 
-      const clonedCourse: Course = {
-        ...originalCourse,
-        id: storageService.generateId(),
+      // Backend handles new ID generation. Frontend sends data for cloning.
+      const { id: originalId, authorId: originalAuthorId, createdAt, updatedAt, ...clonableData } = originalCourse;
+      const clonedCourseData = {
+        ...clonableData,
         title: `${originalCourse.title} (Copy)`,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        authorId: authorId, // New author for the cloned course
       };
 
-      const savedCourse = await storageService.saveCourse(clonedCourse);
+      const savedCourse = await storageService.saveCourse(clonedCourseData as Course); // saveCourse expects full Course, backend creates new ID
       dispatch({ type: 'ADD_COURSE', payload: savedCourse });
       return savedCourse;
     } catch (error) {
@@ -211,7 +202,7 @@ export function CourseProvider({ children }: { children: ReactNode }) {
     } finally {
       dispatch({ type: 'SET_LOADING', payload: false });
     }
-  }, []);
+  }, [storageService]);
 
   const setViewMode = (mode: ViewMode) => {
     dispatch({ type: 'SET_VIEW_MODE', payload: mode });
@@ -224,46 +215,52 @@ export function CourseProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to load lesson library' });
     }
-  }, []);
+  }, [storageService]);
 
   const addToLessonLibrary = useCallback(async (lesson: LessonLibraryItem) => {
     try {
+      // Backend handles ID generation for new library items
       await storageService.saveLessonToLibrary(lesson);
-      await loadLessonLibrary();
+      await loadLessonLibrary(); // Refresh library
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to add lesson to library' });
     }
-  }, [loadLessonLibrary]);
+  }, [storageService, loadLessonLibrary]);
 
-  const loadTemplates = async () => {
+  const loadTemplates = useCallback(async () => {
     try {
       const templates = await storageService.getTemplates();
       dispatch({ type: 'SET_TEMPLATES', payload: templates });
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to load templates' });
     }
-  };
+  }, [storageService]);
 
-  const saveAsTemplate = async (courseId: string, name: string, description: string) => {
+  // Modified to accept authorId for the new template
+  const saveAsTemplate = async (courseId: string, name: string, description: string, authorId: string) => {
     try {
       const course = await storageService.getCourse(courseId);
       if (!course) throw new Error('Course not found');
 
-      const template: CourseTemplate = {
-        id: storageService.generateId(),
+      const templateData: Omit<CourseTemplate, 'id' | 'createdAt'> = {
         name,
         description,
-        course: {
+        course: { // This structure matches CourseTemplate's 'course' field
           title: course.title,
           description: course.description,
           coverImage: course.coverImage,
           modules: course.modules,
           tags: course.tags,
+          isPaid: course.isPaid,
+          accessLevel: course.accessLevel,
+          requiredPlan: course.requiredPlan,
+          stripeProductId: course.stripeProductId,
+          // authorId for the template content itself can be the original author or system
         },
-        createdAt: new Date(),
+        // authorId: authorId, // If templates themselves are user-owned
       };
-
-      await storageService.saveTemplate(template);
+      // Backend will assign ID to the template.
+      await storageService.saveTemplate(templateData as CourseTemplate);
       await loadTemplates();
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to save template' });
@@ -279,20 +276,30 @@ export function CourseProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const importCourse = async (courseData: string): Promise<Course> => {
+  // Modified to accept authorId for the imported course
+  const importCourse = async (courseData: string, authorId: string): Promise<Course> => {
     try {
-      const course = await storageService.importCourse(courseData);
-      dispatch({ type: 'ADD_COURSE', payload: course });
-      return course;
+      // The storageService.importCourse method now doesn't assign IDs.
+      // It prepares a payload for the backend to create a new course with a new author.
+      const courseToCreate = await storageService.importCourse(courseData); // This will be Omit<Course, 'id' ...>
+
+      const coursePayloadWithAuthor = {
+        ...courseToCreate,
+        authorId: authorId,
+      };
+
+      // Assuming the backend's saveCourse (POST to /api/courses) can handle this payload
+      // and will create all nested structures with new IDs.
+      const savedCourse = await storageService.saveCourse(coursePayloadWithAuthor as Course);
+
+      dispatch({ type: 'ADD_COURSE', payload: savedCourse });
+      return savedCourse;
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Failed to import course' });
       throw error;
     }
   };
 
-  const generateId = () => storageService.generateId();
-
-  // Load initial data on mount
   useEffect(() => {
     const initializeData = async () => {
       try {
@@ -311,26 +318,26 @@ export function CourseProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'SET_LOADING', payload: false });
       }
     };
-
-    initializeData();
-  }, []);
+    if (storageService) { // Only initialize if storageService is provided
+        initializeData();
+    }
+  }, [storageService, loadCourses, loadLessonLibrary, loadTemplates]); // Dependencies ensure re-init if service changes
 
   const value: CourseContextType = {
     ...state,
     loadCourses,
-    createCourse,
+    createCourse: (courseData, authorId = userId) => createCourse(courseData, authorId),
     updateCourse,
     deleteCourse,
-    cloneCourse,
+    cloneCourse: (id, authorId = userId) => cloneCourse(id, authorId),
     loadCourse,
     setViewMode,
     loadLessonLibrary,
     addToLessonLibrary,
     loadTemplates,
-    saveAsTemplate,
+    saveAsTemplate: (courseId, name, description, authorId = userId) => saveAsTemplate(courseId, name, description, authorId),
     exportCourse,
-    importCourse,
-    generateId,
+    importCourse: (courseData, authorId = userId) => importCourse(courseData, authorId),
   };
 
   return (

@@ -81,8 +81,7 @@ export interface CourseTemplate {
 export type ViewMode = 'view' | 'edit';
 
 export interface StorageConfig {
-  type: 'localStorage' | 'backend';
-  apiUrl?: string;
+  apiUrl: string; // Now required
   apiKey?: string;
 }
 

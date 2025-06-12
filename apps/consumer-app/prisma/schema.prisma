@@ -1,0 +1,184 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  hashedPassword String? // For credentials provider, NextAuth might handle this.
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  courses       Course[]
+  subscription  Subscription?
+
+  // For NextAuth.js adapter if used
+  accounts      Account[]
+  sessions      Session[]
+
+  @@map("users")
+}
+
+// For NextAuth.js adapter
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verificationtokens")
+}
+// End NextAuth.js adapter models
+
+model Course {
+  id            String    @id @default(cuid())
+  title         String
+  description   String?   @db.Text
+  coverImage    String?
+  tags          String[]  @default([])
+  isTemplate    Boolean   @default(false) // To identify course templates
+
+  authorId      String
+  author        User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  modules       Module[]
+
+  // Fields for paid courses / access control
+  isPaid        Boolean   @default(false)
+  accessLevel   String?   // e.g., "free", "paid", "premium" (from sampleData)
+  requiredPlan  String?   // e.g., "pro", "enterprise" - specific plan name needed
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("courses")
+}
+
+model Module {
+  id            String    @id @default(cuid())
+  title         String
+  description   String?   @db.Text
+  order         Int
+
+  courseId      String
+  course        Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  lessons       Lesson[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("modules")
+}
+
+model Lesson {
+  id            String    @id @default(cuid())
+  title         String
+  description   String?   @db.Text
+  duration      Int?      // in minutes or seconds, decide unit
+  order         Int
+
+  moduleId      String
+  module        Module    @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  contentBlocks ContentBlock[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("lessons")
+}
+
+model ContentBlock {
+  id            String    @id @default(cuid())
+  type          String    // "text", "image", "video", etc.
+  content       Json      // Store type-specific content structure here
+  order         Int
+
+  lessonId      String
+  lesson        Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("contentblocks")
+}
+
+model Subscription {
+  id                    String    @id @default(cuid())
+  userId                String    @unique // Each user has one active subscription
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  stripeSubscriptionId  String    @unique // From Stripe
+  stripeCustomerId      String    @unique // From Stripe
+  stripePriceId         String?   // The price ID from Stripe (e.g. for a specific plan)
+  stripeCurrentPeriodEnd DateTime? // From Stripe, when the current billing period ends
+
+  planId                String    // Your internal plan identifier e.g., "free", "pro", "enterprise"
+  status                String    // e.g., "active", "canceled", "incomplete", "trialing"
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@map("subscriptions")
+}
+
+model LessonLibraryItem {
+  id            String    @id @default(cuid())
+  title         String
+  description   String?   @db.Text
+  content       Json      // Reusable lesson content
+  duration      Int?
+  tags          String[]  @default([])
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("lessonlibraryitems")
+}
+
+// CourseTemplate is handled by `isTemplate` flag on Course model for now.
+// If it needs more distinct fields later, it can be a separate model.
+
+// GlobalStripeSettings might be better stored as application configuration
+// rather than in the database, unless it needs to be dynamically changed by an admin UI.
+// For now, I'm omitting it from the DB schema.
+// It includes API keys which should definitely not be in the DB if possible.
