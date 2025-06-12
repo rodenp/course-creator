@@ -1,7 +1,6 @@
 import { loadStripe, type Stripe } from '@stripe/stripe-js';
-import { realStripeAPI } from './stripe-real-api';
 
-// Stripe webhook event types
+// Stripe webhook event types (can remain, useful for frontend if webhooks push to client)
 export interface StripeWebhookEvent {
   id: string;
   object: 'event';
@@ -20,12 +19,10 @@ export interface StripeWebhookEvent {
   type: string;
 }
 
-// Stripe configuration interface
-interface StripeConfig {
+// Frontend-specific Stripe configuration
+interface FrontendStripeConfig {
   publishableKey: string;
-  secretKey: string;
-  webhookSecret?: string;
-  testMode: boolean;
+  testMode?: boolean;
 }
 
 // Subscription plan interface
@@ -33,12 +30,13 @@ export interface SubscriptionPlan {
   id: string;
   name: string;
   description: string;
-  price: number;
+  price: number; // Assuming this is in major units (e.g., dollars, euros)
   currency: string;
   interval: 'month' | 'year';
-  stripePriceId: string;
+  stripePriceId?: string;
   features: string[];
   popular?: boolean;
+  trialPeriodDays?: number;
 }
 
 // Customer interface
@@ -50,10 +48,9 @@ export interface Customer {
   subscriptionId?: string;
   subscriptionStatus?: 'active' | 'canceled' | 'past_due' | 'unpaid' | 'trialing' | 'incomplete';
   currentPlan?: string;
-  billingCycleAnchor?: Date;
-  cancelAtPeriodEnd?: boolean;
   currentPeriodStart?: Date;
   currentPeriodEnd?: Date;
+  cancelAtPeriodEnd?: boolean;
   trialEnd?: Date;
 }
 
@@ -73,9 +70,9 @@ export interface PaymentMethod {
 // Invoice interface
 export interface Invoice {
   id: string;
-  number: string;
+  number?: string; // Number might not always be present for all invoice states
   status: string;
-  amount: number;
+  amount: number; // Typically in cents for Stripe, but service methods should clarify
   currency: string;
   created: Date;
   paidAt?: Date;
@@ -90,90 +87,57 @@ export interface Subscription {
   status: string;
   currentPeriodStart: Date;
   currentPeriodEnd: Date;
-  plan: SubscriptionPlan;
+  plan?: SubscriptionPlan;
   cancelAtPeriodEnd: boolean;
   canceledAt?: Date;
   trialEnd?: Date;
   customerId: string;
 }
 
+
 class StripeService {
   private stripe: Stripe | null = null;
-  private config: StripeConfig | null = null;
+  private config: FrontendStripeConfig | null = null;
   private isInitialized = false;
+  private apiUrlBase = '/api/stripe'; // Base path for consumer app's Stripe API routes
 
-  // Note: Subscription plans are now managed through the PlanPricing component
-  // and loaded from localStorage. No hardcoded plans needed here.
+  async initialize(config: FrontendStripeConfig): Promise<void> {
+    if (!config.publishableKey || !config.publishableKey.startsWith('pk_')) {
+      this.isInitialized = false;
+      throw new Error('Invalid publishable key format - must start with pk_');
+    }
 
-  // Initialize Stripe with improved error handling
-  async initialize(config: StripeConfig): Promise<void> {
-    this.config = config;
+    this.config = {
+        ...config,
+        testMode: config.testMode ?? !config.publishableKey.startsWith('pk_live_')
+    };
 
     try {
-      // Validate key formats
-      if (!config.publishableKey || !config.publishableKey.startsWith('pk_')) {
-        throw new Error('Invalid publishable key format - must start with pk_');
-      }
+      const isSpecificDemoKey = this.config.publishableKey === 'pk_test_51234567890123456789012345678901234567890123';
 
-      if (!config.secretKey || !config.secretKey.startsWith('sk_')) {
-        throw new Error('Invalid secret key format - must start with sk_');
-      }
-
-      // Check if using demo keys
-      const isDemoKey = config.publishableKey === 'pk_test_51234567890123456789012345678901234567890123';
-
-      if (isDemoKey) {
-        // Use mock Stripe for demo keys to avoid loading issues
-        console.log('Using demo keys - initializing mock Stripe');
+      if (isSpecificDemoKey || this.config.testMode) {
+        console.log('StripeService: Using demo/test keys - initializing mock Stripe.js.');
         this.stripe = this.createMockStripe();
-        this.isInitialized = true;
-        console.log('✅ Stripe initialized with demo keys (mock mode)');
       } else {
-        // For real keys, use direct redirect approach (bypass Stripe.js CORS issues)
-        console.log("Real keys detected - using direct redirect approach");
-        console.log(`Key: ${config.publishableKey.substring(0, 20)}... (${config.testMode ? 'test' : 'live'} mode)`);
-
-        // Use a minimal mock for compatibility, but redirect directly
-        this.stripe = this.createMockStripe();
-        this.isInitialized = true;
-        console.log("✅ Real Stripe backend ready - will redirect directly to checkout URLs");
+        this.stripe = await this.loadStripeWithTimeout(this.config.publishableKey, 5000);
       }
 
-      // Save configuration to localStorage
-      localStorage.setItem('stripe_config', JSON.stringify(config));
-
-      // Initialize real Stripe API for actual payment processing
-      if (!isDemoKey) {
-        try {
-          realStripeAPI.initialize({
-            publishableKey: config.publishableKey,
-            secretKey: config.secretKey,
-            webhookSecret: config.webhookSecret
-          });
-          console.log('🔧 Real Stripe API initialized for actual payment processing');
-        } catch (realApiError) {
-          console.warn('⚠️ Real Stripe API initialization failed:', realApiError);
-          // Continue with mock frontend, real API will be unavailable
-        }
-      }
+      this.isInitialized = true;
+      console.log(`✅ Stripe.js initialized for publishableKey: ${this.config.publishableKey.substring(0,20)}... TestMode: ${this.config.testMode}`);
 
     } catch (error) {
-      console.error('❌ Failed to initialize Stripe:', error);
+      console.error('❌ Failed to initialize Stripe.js:', error);
       this.isInitialized = false;
-
-      // Provide helpful error messages
       if (error instanceof Error) {
         if (error.message.includes('Failed to load Stripe.js') || error.message.includes('timeout') || error.message.includes('CORS') || error.message.includes('NS_ERROR_DOM_CORP_FAILED')) {
-          throw new Error('Failed to load Stripe.js. This could be due to:\n\n• Network connectivity issues\n• Firewall or proxy blocking Stripe\n• Ad blockers preventing script loading\n• Invalid publishable key\n\nPlease check your connection and try again.');
+          throw new Error('Failed to load Stripe.js. This could be due to network issues, ad blockers, or an invalid publishable key. Please check your connection and key, then try again.');
         }
         throw error;
       }
-
-      throw new Error('Unknown error occurred while initializing Stripe');
+      throw new Error('Unknown error occurred while initializing Stripe.js');
     }
   }
 
-  // Helper method to load Stripe with timeout
   private async loadStripeWithTimeout(publishableKey: string, timeout: number): Promise<Stripe | null> {
     return Promise.race([
       loadStripe(publishableKey),
@@ -183,41 +147,25 @@ class StripeService {
     ]);
   }
 
-  // Create mock Stripe object for demo mode
   private createMockStripe(): Stripe {
-    return {
-      redirectToCheckout: async () => ({ error: null }),
-      elements: () => ({} as unknown as any),
-      confirmPayment: async () => ({ error: null } as any),
-      paymentRequest: () => ({} as unknown as any),
-      retrievePaymentIntent: async () => ({} as unknown as any),
-      confirmCardPayment: async () => ({} as unknown as any),
-      createToken: async () => ({} as unknown as any),
-      createSource: async () => ({} as unknown as any),
-      retrieveSource: async () => ({} as unknown as any),
-      paymentIntents: {} as unknown as any,
-      setupIntents: {} as unknown as any,
-      customers: {} as unknown as any,
-      charges: {} as unknown as any,
-      subscriptions: {} as unknown as any,
-      invoices: {} as unknown as any,
-      products: {} as unknown as any,
-      plans: {} as unknown as any,
-      coupons: {} as unknown as any,
-      events: {} as unknown as any
-    } as unknown as Stripe;
+    const mockRedirectToCheckout = async (options?: any) => {
+      console.log("MockStripe: redirectToCheckout called with options:", options);
+      if (options && options.sessionId && options.sessionId.startsWith("cs_test_")) {
+        return { error: null };
+      }
+      return { error: { message: "Mock redirect failed: Invalid session ID." } };
+    };
+    return { redirectToCheckout: mockRedirectToCheckout, elements: () => ({} as any) } as Stripe;
   }
 
-  // Get subscription plans - now loaded from user configuration
   getPlans(): SubscriptionPlan[] {
-    // Return empty array since plans are now managed through PlanPricing component
-    console.warn('⚠️ getPlans() called on StripeService - plans are now managed through PlanPricing component');
+    console.warn('StripeService.getPlans: Deprecated. Plans are managed by BillingProvider, sourced from props or localStorage.');
     return [];
   }
 
-  // Create Stripe checkout session with real backend integration
   async createCheckoutSession(params: {
-    priceId: string;
+    priceId?: string;
+    planId?: string;
     customerId?: string;
     customerEmail?: string;
     successUrl: string;
@@ -225,403 +173,117 @@ class StripeService {
     mode?: 'subscription' | 'payment';
     trialPeriodDays?: number;
   }): Promise<{ sessionId: string; url: string }> {
-    if (!this.isInitialized || !this.config) {
-      throw new Error('Stripe not initialized');
+    if (!this.isInitialized) throw new Error('Stripe (frontend) not initialized');
+
+    console.log('StripeService.createCheckoutSession: Calling backend API with params:', params);
+
+    const response = await fetch(`${this.apiUrlBase}/checkout-sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' /* TODO: Add Auth header */ },
+      body: JSON.stringify(params),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Request failed with status: ' + response.status }));
+      throw new Error(errorData.message || `API request failed: ${response.statusText}`);
     }
-
-    console.log('🚀 Creating Stripe checkout session with backend integration:', params);
-
-    // Always use real Stripe API when configured
-    if (realStripeAPI.isConfigured()) {
-      console.log('🚀 Using REAL Stripe API for actual checkout session creation');
-
-      try {
-        const response = await realStripeAPI.createRealCheckoutSession({
-          priceId: params.priceId,
-          customerEmail: params.customerEmail || 'customer@example.com',
-          successUrl: params.successUrl,
-          cancelUrl: params.cancelUrl,
-          mode: params.mode || 'subscription',
-          trialPeriodDays: params.trialPeriodDays
-        });
-
-        if (!response.success) {
-          throw new Error(response.error || 'Failed to create real checkout session');
-        }
-
-        console.log('✅ REAL Stripe checkout session created successfully:', response);
-        return {
-          sessionId: response.sessionId,
-          url: response.url
-        };
-
-      } catch (error) {
-        console.error('❌ Real Stripe API checkout session creation failed:', error);
-        throw error;
-      }
-    }
-
-    // Error if Stripe is not properly configured
-    throw new Error('Stripe integration not configured. Please configure Stripe in Extensions with real API keys.');
+    const sessionData = await response.json();
+    return { sessionId: sessionData.sessionId, url: sessionData.url };
   }
 
-  // Redirect to checkout with real Stripe integration
   async redirectToCheckout(sessionId: string): Promise<void> {
-    if (!this.stripe) {
-      throw new Error('Stripe not initialized');
+    if (!this.stripe) throw new Error('Stripe.js not loaded');
+    const { error } = await this.stripe.redirectToCheckout({ sessionId });
+    if (error) {
+      console.error('Stripe redirectToCheckout error:', error);
+      throw error;
     }
-
-    console.log('🔄 Processing checkout redirect for session:', sessionId);
-    console.log('🔍 Stripe initialized:', this.isInitialized);
-    console.log('🔍 Real Stripe API configured:', realStripeAPI.isConfigured());
-    console.log('🔍 Stripe instance:', !!this.stripe);
-
-    // Always use real Stripe checkout when configured
-    if (realStripeAPI.isConfigured()) {
-      console.log('🚀 Getting checkout URL and redirecting directly');
-
-      try {
-        // Get the checkout session from real Stripe API to get the URL
-        console.log('📞 Retrieving checkout session to get URL:', sessionId);
-        const session = await realStripeAPI.retrieveCheckoutSession(sessionId);
-
-        if (!session || !session.url) {
-          throw new Error('Failed to get checkout URL from session');
-        }
-
-        console.log('✅ Got checkout URL:', session.url);
-        console.log('🚀 Redirecting directly to Stripe checkout');
-
-        // Direct redirect - bypasses Stripe.js CORS issues
-        window.location.href = session.url;
-
-        return;
-
-      } catch (error) {
-        console.error('❌ Failed to get checkout URL:', error);
-        throw error;
-      }
-    }
-
-    // Error if Stripe is not properly configured
-    throw new Error('Stripe checkout not configured. Please configure Stripe in Extensions with real API keys.');
   }
 
-  // All simulation methods removed - use real Stripe only
-
-  // All mock subscription methods removed - use real Stripe only
-
-  // Get customer data
-  async getCustomer(customerId: string): Promise<Customer | null> {
-    // In demo mode, return stored customer data
-    if (this.config?.testMode) {
-      const storedCustomer = localStorage.getItem('demo_customer');
-      if (storedCustomer) {
-        return JSON.parse(storedCustomer);
-      }
-    }
-
-    // In production, this would make an API call to your backend
-    console.log('Getting customer:', customerId);
-
-    // Return demo customer
-    return {
-      id: customerId,
-      email: 'demo@example.com',
-      name: 'Demo Customer',
-      stripeCustomerId: 'cus_demo_customer',
-      subscriptionStatus: 'active',
-      currentPlan: 'pro'
-    };
-  }
-
-  // Get customer subscriptions
-  async getCustomerSubscriptions(customerId: string): Promise<Subscription[]> {
-    if (this.config?.testMode) {
-      const storedSubscription = localStorage.getItem('demo_subscription');
-      if (storedSubscription) {
-        return [JSON.parse(storedSubscription)];
-      }
-    }
-
-    // Return demo subscription
-    return [{
-      id: 'sub_demo_subscription',
-      status: 'active',
-      currentPeriodStart: new Date(),
-      currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      plan: null, // Plans managed through PlanPricing
-      cancelAtPeriodEnd: false,
-      customerId: customerId
-    }];
-  }
-
-  // Get payment methods
-  async getPaymentMethods(customerId: string): Promise<PaymentMethod[]> {
-    console.log('Getting payment methods for:', customerId);
-
-    // Return demo payment methods
-    return [{
-      id: 'pm_demo_card',
-      type: 'card',
-      card: {
-        brand: 'visa',
-        last4: '4242',
-        expMonth: 12,
-        expYear: 2025
-      },
-      isDefault: true
-    }];
-  }
-
-  // Get invoices
-  async getInvoices(customerId: string): Promise<Invoice[]> {
-    console.log('Getting invoices for:', customerId);
-
-    // Return demo invoices
-    return [
-      {
-        id: 'in_demo_invoice_1',
-        number: 'INV-2024-001',
-        status: 'paid',
-        amount: 2900, // $29.00 in cents
-        currency: 'usd',
-        created: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-        paidAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-        description: 'Pro Plan - Monthly',
-        hostedInvoiceUrl: '#demo-invoice',
-        invoicePdf: '#demo-invoice-pdf'
-      },
-      {
-        id: 'in_demo_invoice_2',
-        number: 'INV-2024-002',
-        status: 'paid',
-        amount: 2900,
-        currency: 'usd',
-        created: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
-        paidAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000),
-        description: 'Pro Plan - Monthly',
-        hostedInvoiceUrl: '#demo-invoice',
-        invoicePdf: '#demo-invoice-pdf'
-      }
-    ];
-  }
-
-  // Update subscription
-  async updateSubscription(params: {
-    subscriptionId: string;
-    priceId?: string;
-    quantity?: number;
-    cancelAtPeriodEnd?: boolean;
-  }): Promise<Subscription> {
-    console.log('Updating subscription:', params);
-
-    if (this.config?.testMode) {
-      const storedSubscription = localStorage.getItem('demo_subscription');
-      if (storedSubscription) {
-        const subscription = JSON.parse(storedSubscription);
-
-        if (params.cancelAtPeriodEnd !== undefined) {
-          subscription.cancelAtPeriodEnd = params.cancelAtPeriodEnd;
-          subscription.canceledAt = params.cancelAtPeriodEnd ? new Date() : undefined;
-        }
-
-        if (params.priceId) {
-          // Plans now managed through PlanPricing component
-          console.log('Plan update requested for price ID:', params.priceId);
-        }
-
-        localStorage.setItem('demo_subscription', JSON.stringify(subscription));
-
-        // Update customer data too
-        const storedCustomer = localStorage.getItem('demo_customer');
-        if (storedCustomer) {
-          const customer = JSON.parse(storedCustomer);
-          customer.cancelAtPeriodEnd = subscription.cancelAtPeriodEnd;
-          customer.currentPlan = subscription.plan.id;
-          localStorage.setItem('demo_customer', JSON.stringify(customer));
-        }
-
-        return subscription;
-      }
-    }
-
-    // Mock successful update
-    return {
-      id: params.subscriptionId,
-      status: 'active',
-      currentPeriodStart: new Date(),
-      currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-      plan: null, // Plans managed through PlanPricing
-      cancelAtPeriodEnd: params.cancelAtPeriodEnd || false,
-      customerId: 'cus_demo_customer'
-    };
-  }
-
-  // Cancel subscription
   async cancelSubscription(subscriptionId: string, immediate = false): Promise<Subscription> {
-    console.log('Canceling subscription:', subscriptionId, 'immediate:', immediate);
-
-    return this.updateSubscription({
-      subscriptionId,
-      cancelAtPeriodEnd: !immediate
+    if (!this.isInitialized) throw new Error('Stripe (frontend) not initialized');
+    const response = await fetch(`${this.apiUrlBase}/subscriptions/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', /* TODO: Auth header */ },
+      body: JSON.stringify({ subscriptionId, immediate }),
     });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Cancel subscription request failed: ' + response.status }));
+      throw new Error(errorData.message || `API request failed: ${response.statusText}`);
+    }
+    return response.json();
   }
 
-  // Resume subscription
   async resumeSubscription(subscriptionId: string): Promise<Subscription> {
-    console.log('Resuming subscription:', subscriptionId);
-
-    return this.updateSubscription({
-      subscriptionId,
-      cancelAtPeriodEnd: false
+    if (!this.isInitialized) throw new Error('Stripe (frontend) not initialized');
+    const response = await fetch(`${this.apiUrlBase}/subscriptions/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', /* TODO: Auth header */ },
+      body: JSON.stringify({ subscriptionId }),
     });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Resume subscription request failed: ' + response.status }));
+      throw new Error(errorData.message || `API request failed: ${response.statusText}`);
+    }
+    return response.json();
   }
 
-  // Create billing portal session
   async createBillingPortalSession(customerId: string, returnUrl: string): Promise<{ url: string }> {
-    console.log('Creating billing portal session for:', customerId);
-
-    if (this.config?.testMode) {
-      alert('Demo Mode: In production, this would open the Stripe Customer Portal where customers can manage their billing, download invoices, and update payment methods.');
-      return { url: returnUrl };
+    if (!this.isInitialized) throw new Error('Stripe (frontend) not initialized');
+    const response = await fetch(`${this.apiUrlBase}/billing-portal-sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', /* TODO: Auth header */ },
+      body: JSON.stringify({ customerId, returnUrl }),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'Create billing portal session request failed: ' + response.status }));
+      throw new Error(errorData.message || `API request failed: ${response.statusText}`);
     }
-
-    // In production, this would create a real billing portal session
-    return {
-      url: `https://billing.stripe.com/p/session/demo_${Date.now()}?return_url=${encodeURIComponent(returnUrl)}`
-    };
+    return response.json();
   }
 
-  // Create customer
-  async createCustomer(params: {
-    email: string;
-    name?: string;
-    metadata?: Record<string, string>;
-  }): Promise<Customer> {
-    console.log('Creating customer:', params);
-
-    const customer: Customer = {
-      id: `demo_${Date.now()}`,
-      email: params.email,
-      name: params.name,
-      stripeCustomerId: `cus_demo_${Date.now()}`
-    };
-
-    if (this.config?.testMode) {
-      localStorage.setItem('demo_customer', JSON.stringify(customer));
-    }
-
-    return customer;
+  async getCustomer(customerId: string): Promise<Customer | null> {
+    console.warn("StripeService.getCustomer: Using mock. Needs backend API call to " + `${this.apiUrlBase}/customers/${customerId}`);
+    return { id: customerId, email: 'demo@example.com', name: 'Demo Customer (Mock)', stripeCustomerId: `cus_mock_${customerId}` };
   }
 
-  // Handle webhook events
-  async handleWebhookEvent(event: StripeWebhookEvent): Promise<{ received: boolean }> {
-    console.log('Handling Stripe webhook:', event.type, event.id);
-
-    switch (event.type) {
-      case 'customer.subscription.created':
-        console.log('Subscription created:', event.data.object);
-        break;
-
-      case 'customer.subscription.updated':
-        console.log('Subscription updated:', event.data.object);
-        break;
-
-      case 'customer.subscription.deleted':
-        console.log('Subscription canceled:', event.data.object);
-        break;
-
-      case 'invoice.payment_succeeded':
-        console.log('Payment succeeded:', event.data.object);
-        break;
-
-      case 'invoice.payment_failed':
-        console.log('Payment failed:', event.data.object);
-        break;
-
-      case 'customer.subscription.trial_will_end':
-        console.log('Trial ending soon:', event.data.object);
-        break;
-
-      default:
-        console.log('Unhandled webhook event:', event.type);
-    }
-
-    return { received: true };
+  async getPaymentMethods(customerId: string): Promise<PaymentMethod[]> {
+    console.warn("StripeService.getPaymentMethods: Using mock. Needs backend API call to " + `${this.apiUrlBase}/payment-methods?customerId=${customerId}`);
+    return [];
   }
 
-  // Verify webhook signature
-  verifyWebhookSignature(payload: string, signature: string): boolean {
-    if (!this.config?.webhookSecret) {
-      console.warn('Webhook secret not configured');
-      return false;
-    }
-
-    // In production, use Stripe's webhook signature verification
-    console.log('Verifying webhook signature');
-    return true; // Mock verification for demo
+  async getInvoices(customerId: string): Promise<Invoice[]> {
+     console.warn("StripeService.getInvoices: Using mock. Needs backend API call to " + `${this.apiUrlBase}/invoices?customerId=${customerId}`);
+    return [];
   }
 
-  // Format currency
   formatCurrency(amount: number, currency = 'usd'): string {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: currency.toUpperCase()
-    }).format(amount / 100);
+    }).format(amount / 100); // Assuming amount is in cents
   }
 
-  // Utility methods
   isConfigured(): boolean {
-    return this.isInitialized && this.config !== null;
+    return this.isInitialized && !!this.config?.publishableKey;
   }
 
   isTestMode(): boolean {
     return this.config?.testMode ?? true;
   }
 
-  getConfig(): StripeConfig | null {
+  getConfig(): FrontendStripeConfig | null {
     return this.config;
   }
 
-  // Test connection to Stripe
   async testConnection(): Promise<boolean> {
-    try {
-      if (!this.isInitialized) {
-        throw new Error('Stripe not initialized');
-      }
-
-      console.log('🧪 Testing Stripe connection...');
-
-      // For demo keys, just check if Stripe is initialized
-      if (this.config?.publishableKey === 'pk_test_51234567890123456789012345678901234567890123') {
-        console.log('✅ Demo mode - connection test passed (mock)');
-        return true;
-      }
-
-      // For real keys, use the real Stripe API to test connection
-      try {
-        const realStripeAPI = (window as any).realStripeAPI;
-        if (realStripeAPI && realStripeAPI.isConfigured()) {
-          const connectionTest = await realStripeAPI.testConnection();
-          console.log('✅ Real Stripe API connection test result:', connectionTest);
-          return connectionTest;
-        } else {
-          console.log('⚠️ Real Stripe API not available, skipping connection test');
-          return true; // Assume success if real API not available
-        }
-      } catch (error) {
-        console.warn('⚠️ Real Stripe API connection test failed:', error);
-        // Don't fail the overall test if real API test fails
-        return true;
-      }
-
-    } catch (error) {
-      console.error('❌ Stripe connection test failed:', error);
+    if (!this.isInitialized) {
+      console.warn("StripeService.testConnection: Stripe not initialized.");
       return false;
     }
+    console.log("StripeService.testConnection: Frontend Stripe.js appears loaded.");
+    return true;
   }
 }
 
-// Export singleton instance
 export const stripeService = new StripeService();
