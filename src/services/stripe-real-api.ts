@@ -187,7 +187,7 @@ class RealStripeAPI {
     name?: string;
     metadata?: Record<string, string>;
   }): Promise<Stripe.Customer | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -219,7 +219,7 @@ class RealStripeAPI {
 
   // Retrieve a real subscription
   async retrieveSubscription(subscriptionId: string): Promise<Stripe.Subscription | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -246,7 +246,7 @@ class RealStripeAPI {
 
   // List customer subscriptions
   async listCustomerSubscriptions(customerId: string): Promise<Stripe.Subscription[]> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -271,7 +271,7 @@ class RealStripeAPI {
 
   // Cancel a subscription
   async cancelSubscription(subscriptionId: string, atPeriodEnd = true): Promise<Stripe.Subscription | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -305,7 +305,7 @@ class RealStripeAPI {
 
   // Resume a subscription
   async resumeSubscription(subscriptionId: string): Promise<Stripe.Subscription | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -336,7 +336,7 @@ class RealStripeAPI {
 
   // Test the connection to Stripe
   async testConnection(): Promise<boolean> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       return false;
     }
 
