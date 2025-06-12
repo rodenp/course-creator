@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
 
-// Production webhook handler with proper signature verification
-export class ProductionStripeWebhookHandler {
+// Secure webhook handler with proper signature verification
+export class SecureStripeWebhookHandler {
   private stripe: Stripe;
   private webhookSecret: string;
 
@@ -332,8 +332,8 @@ export class ProductionStripeWebhookHandler {
 }
 
 // Factory function to create webhook handler
-export const createProductionWebhookHandler = (secretKey: string, webhookSecret: string) => {
-  return new ProductionStripeWebhookHandler(secretKey, webhookSecret);
+export const createSecureWebhookHandler = (secretKey: string, webhookSecret: string) => {
+  return new SecureStripeWebhookHandler(secretKey, webhookSecret);
 };
 
 // Example usage in serverless function
@@ -343,6 +343,6 @@ export const handleStripeWebhook = async (
   secretKey: string,
   webhookSecret: string
 ): Promise<{ success: boolean; error?: string }> => {
-  const handler = createProductionWebhookHandler(secretKey, webhookSecret);
+  const handler = createSecureWebhookHandler(secretKey, webhookSecret);
   return handler.handleWebhook(rawBody, signature);
 };

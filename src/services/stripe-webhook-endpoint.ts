@@ -38,51 +38,6 @@ export const generateWebhookURL = (baseUrl?: string): WebhookEndpointConfig => {
   };
 };
 
-// Create webhook endpoint handler (for backend implementation)
-export const createWebhookHandler = () => {
-  return async (request: Request): Promise<Response> => {
-    try {
-      // Get the raw body
-      const body = await request.text();
-      const signature = request.headers.get('stripe-signature');
-
-      if (!signature) {
-        return new Response('Missing stripe-signature header', { status: 400 });
-      }
-
-      // In production, verify the webhook signature here
-      // const event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
-
-      // For demo, parse the event directly
-      const event: StripeWebhookEvent = JSON.parse(body);
-
-      console.log('🎣 Webhook received:', event.type, event.id);
-
-      // Handle the event
-      await stripeWebhookService.handleEvent(event);
-
-      // Return success response
-      return new Response(JSON.stringify({ received: true }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-
-    } catch (error) {
-      console.error('❌ Webhook error:', error);
-      return new Response(
-        JSON.stringify({
-          error: 'Webhook handler failed',
-          message: error instanceof Error ? error.message : 'Unknown error'
-        }),
-        {
-          status: 400,
-          headers: { 'Content-Type': 'application/json' }
-        }
-      );
-    }
-  };
-};
-
 // Different deployment scenarios and their webhook URLs
 export const getWebhookURLs = () => {
   const scenarios = {

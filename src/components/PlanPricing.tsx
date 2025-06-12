@@ -23,159 +23,132 @@ import {
 } from 'lucide-react';
 import { useStripe } from '@/contexts/StripeContext';
 import { useTranslation } from '@/i18n';
+import { PLANS as DEFAULT_PLANS, type Plan as AppPlan, type PlanType } from '@/types/billing'; // Import AppPlan and default plans
 
 interface PlanPricingProps {
   onBack: () => void;
   onGoToExtensions: () => void;
 }
 
-interface SubscriptionPlan {
-  id: string;
-  name: string;
-  description: string;
-  price: number;
-  currency: string;
-  interval: 'month' | 'year';
-  stripePriceId?: string;
-  features: string[];
-  maxCourses: number;
-  accessLevel: 'basic' | 'pro' | 'enterprise';
-  isPopular?: boolean;
-  isActive: boolean;
-  order: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
+// The internal state for plans in this component will now use AppPlan
+// interface SubscriptionPlan { // This internal interface is replaced by AppPlan
+//   id: string;
+//   name: string;
+//   description: string;
+//   price: number;
+//   currency: string;
+//   interval: 'month' | 'year'; // Will be mapped to AppPlan's 'billing'
+//   stripePriceId?: string;
+//   features: string[];
+//   maxCourses: number; // This is part of AppPlan.limits
+//   accessLevel: 'basic' | 'pro' | 'enterprise'; // This can map to AppPlan.id or a specific field
+//   isPopular?: boolean;
+//   isActive: boolean;
+//   order: number;
+//   createdAt: Date;
+//   updatedAt: Date;
+//   trialPeriodDays?: number; // Added to match form data
+// }
 
 export function PlanPricing({ onBack, onGoToExtensions }: PlanPricingProps) {
   const { t } = useTranslation();
   const { isConfigured: isStripeConfigured, isTestMode } = useStripe();
 
-  const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
+  const [plans, setPlans] = useState<AppPlan[]>(DEFAULT_PLANS); // Use AppPlan and initialize with defaults
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
-  const [editingPlan, setEditingPlan] = useState<SubscriptionPlan | null>(null);
+  const [editingPlan, setEditingPlan] = useState<AppPlan | null>(null); // Use AppPlan
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [deletingPlan, setDeletingPlan] = useState<SubscriptionPlan | null>(null);
+  const [deletingPlan, setDeletingPlan] = useState<AppPlan | null>(null); // Use AppPlan
 
-  // Form state for creating/editing plans
-  const [formData, setFormData] = useState({
+  // Form state for creating/editing plans, aligned with AppPlan structure
+  const [formData, setFormData] = useState<Partial<Omit<AppPlan, 'id' | 'limits' | 'createdAt' | 'updatedAt' | 'order'> & {
+    id?: PlanType | string; // Allow string for new, custom IDs
+    maxCourses: number;
+    trialPeriodDays?: number;
+    accessLevel: PlanType; // Keep for mapping to ID if standard plan
+  }>>({
     name: '',
     description: '',
     price: 0,
     currency: 'USD',
-    interval: 'month' as 'month' | 'year',
+    billing: 'monthly', // Changed from interval
     stripePriceId: '',
     features: [''],
-    maxCourses: 10,
-    accessLevel: 'basic' as 'basic' | 'pro' | 'enterprise',
+    maxCourses: 10, // Directly part of form, will be put into limits
+    accessLevel: 'basic', // Used for ID mapping for standard plans
     isPopular: false,
     isActive: true,
     trialPeriodDays: 0 // 0 means no trial, > 0 means trial period in days
   });
 
-  // Load plans from localStorage
+  // Load plans from localStorage or use defaults from billing.ts
   useEffect(() => {
     const savedPlans = localStorage.getItem('subscriptionPlans');
     if (savedPlans) {
-      const parsedPlans = JSON.parse(savedPlans).map((plan: any) => ({
-        ...plan,
-        createdAt: new Date(plan.createdAt),
-        updatedAt: new Date(plan.updatedAt)
-      }));
-      setPlans(parsedPlans);
+      try {
+        const parsedPlans: AppPlan[] = JSON.parse(savedPlans).map((plan: any): AppPlan => ({
+          ...plan,
+          price: parseFloat(plan.price || 0),
+          billing: plan.billing || (plan.interval === 'year' ? 'annually' : 'monthly'), // Ensure billing field
+          interval: undefined, // remove old interval
+          createdAt: plan.createdAt ? new Date(plan.createdAt) : new Date(),
+          updatedAt: plan.updatedAt ? new Date(plan.updatedAt) : new Date(),
+          limits: plan.limits || DEFAULT_PLANS.find(p => p.id === plan.id)?.limits || { maxCourses: 0 }
+        }));
+        setPlans(parsedPlans);
+      } catch (e) {
+        console.error("Failed to parse saved plans, using default.", e);
+        setPlans(DEFAULT_PLANS);
+        localStorage.setItem('subscriptionPlans', JSON.stringify(DEFAULT_PLANS));
+      }
     } else {
-      // Initialize with default plans
-      const defaultPlans: SubscriptionPlan[] = [
-        {
-          id: 'basic',
-          name: 'Basic',
-          description: 'Perfect for individuals getting started',
-          price: 9.99,
-          currency: 'USD',
-          interval: 'month',
-          features: ['Access to 5 courses', 'Basic analytics', 'Email support'],
-          maxCourses: 5,
-          accessLevel: 'basic',
-          isActive: true,
-          order: 1,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        },
-        {
-          id: 'pro',
-          name: 'Pro',
-          description: 'For professionals and small teams',
-          price: 29.99,
-          currency: 'USD',
-          interval: 'month',
-          features: ['Access to 50 courses', 'Advanced analytics', 'Priority support', 'Custom certificates'],
-          maxCourses: 50,
-          accessLevel: 'pro',
-          isPopular: true,
-          isActive: true,
-          order: 2,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        },
-        {
-          id: 'enterprise',
-          name: 'Enterprise',
-          description: 'For large organizations and enterprises',
-          price: 99.99,
-          currency: 'USD',
-          interval: 'month',
-          features: ['Unlimited courses', 'Advanced analytics', 'Dedicated support', 'Custom branding', 'API access'],
-          maxCourses: 999999,
-          accessLevel: 'enterprise',
-          isActive: true,
-          order: 3,
-          createdAt: new Date(),
-          updatedAt: new Date()
-        }
-      ];
-      setPlans(defaultPlans);
-      localStorage.setItem('subscriptionPlans', JSON.stringify(defaultPlans));
+      // Initialize with default plans from billing.ts if localStorage is empty
+      setPlans(DEFAULT_PLANS);
+      localStorage.setItem('subscriptionPlans', JSON.stringify(DEFAULT_PLANS));
     }
   }, []);
 
-  const savePlans = (updatedPlans: SubscriptionPlan[]) => {
+  const savePlans = (updatedPlans: AppPlan[]) => { // Parameter type updated to AppPlan[]
     setPlans(updatedPlans);
     localStorage.setItem('subscriptionPlans', JSON.stringify(updatedPlans));
+    // Also update StripeContext's plans if it's already loaded them (optional, as it reloads on configure)
+    // This direct update is tricky due to context boundaries. Better to rely on StripeContext reloading.
   };
 
   const handleCreatePlan = () => {
     if (!formData.name.trim()) return;
 
     // Validate Stripe Price ID for paid plans
-    if (formData.price > 0 && !formData.stripePriceId.trim()) {
+    if (formData.price! > 0 && !formData.stripePriceId?.trim()) {
       alert('Stripe Price ID is required for paid plans. Please enter a valid price ID from your Stripe dashboard.');
       return;
     }
 
-    const newPlan: SubscriptionPlan = {
-      id: formData.accessLevel === 'basic' ? 'basic' :
-          formData.accessLevel === 'pro' ? 'pro' :
-          formData.accessLevel === 'enterprise' ? 'enterprise' :
-          `plan-${Date.now()}`, // Fallback for custom plans
-      name: formData.name,
-      description: formData.description,
-      price: formData.price,
-      currency: formData.currency,
-      interval: formData.interval,
+    const newPlanData: AppPlan = {
+      // Determine ID: use accessLevel if it's a standard plan type, otherwise generate.
+      id: (['basic', 'pro', 'enterprise'].includes(formData.accessLevel!) ? formData.accessLevel! : `plan_${Date.now()}`) as PlanType,
+      name: formData.name!,
+      description: formData.description!,
+      price: formData.price!,
+      currency: formData.currency!,
+      billing: formData.billing!, // Changed from interval
       stripePriceId: formData.stripePriceId,
-      features: formData.features.filter(f => f.trim()),
-      maxCourses: formData.maxCourses,
-      accessLevel: formData.accessLevel,
-      isPopular: formData.isPopular,
-      isActive: formData.isActive,
-      trialPeriodDays: formData.trialPeriodDays > 0 ? formData.trialPeriodDays : undefined,
-      order: plans.length + 1,
-      createdAt: new Date(),
-      updatedAt: new Date()
+      features: formData.features!.filter(f => f.trim()),
+      limits: {
+        maxCourses: formData.maxCourses!,
+        // Add other limits if they are part of formData, or use defaults
+        maxStudents: 1000, storageGB: 5, apiCalls: 10000
+      },
+      popular: formData.isPopular,
+      // isActive: formData.isActive, // isActive is not in AppPlan, but was in internal SubscriptionPlan. Assume true for new.
+      trialPeriodDays: formData.trialPeriodDays! > 0 ? formData.trialPeriodDays : undefined,
+      // order: plans.length + 1, // order is not in AppPlan
+      // createdAt: new Date(), // Not part of AppPlan in billing.ts
+      // updatedAt: new Date()  // Not part of AppPlan in billing.ts
     };
 
-    savePlans([...plans, newPlan]);
+    savePlans([...plans, newPlanData]);
     setShowCreateDialog(false);
     resetForm();
   };
@@ -184,30 +157,32 @@ export function PlanPricing({ onBack, onGoToExtensions }: PlanPricingProps) {
     if (!editingPlan || !formData.name.trim()) return;
 
     // Validate Stripe Price ID for paid plans
-    if (formData.price > 0 && !formData.stripePriceId.trim()) {
+    if (formData.price! > 0 && !formData.stripePriceId?.trim()) {
       alert('Stripe Price ID is required for paid plans. Please enter a valid price ID from your Stripe dashboard.');
       return;
     }
 
-    const updatedPlans = plans.map(plan =>
-      plan.id === editingPlan.id
-        ? {
-            ...plan,
-            name: formData.name,
-            description: formData.description,
-            price: formData.price,
-            currency: formData.currency,
-            interval: formData.interval,
+    const updatedPlans = plans.map(p =>
+      p.id === editingPlan.id
+        ? ({
+            ...p, // Spread existing AppPlan fields
+            name: formData.name!,
+            description: formData.description!,
+            price: formData.price!,
+            currency: formData.currency!,
+            billing: formData.billing!, // Changed from interval
             stripePriceId: formData.stripePriceId,
-            features: formData.features.filter(f => f.trim()),
-            maxCourses: formData.maxCourses,
-            accessLevel: formData.accessLevel,
-            isPopular: formData.isPopular,
-            isActive: formData.isActive,
-            trialPeriodDays: formData.trialPeriodDays > 0 ? formData.trialPeriodDays : undefined,
-            updatedAt: new Date()
-          }
-        : plan
+            features: formData.features!.filter(f => f.trim()),
+            limits: {
+                ...p.limits, // Preserve other limits
+                maxCourses: formData.maxCourses!
+            },
+            popular: formData.isPopular,
+            // isActive: formData.isActive, // Not in AppPlan
+            trialPeriodDays: formData.trialPeriodDays! > 0 ? formData.trialPeriodDays : undefined,
+            // updatedAt: new Date() // Not in AppPlan
+          } as AppPlan)
+        : p
     );
 
     savePlans(updatedPlans);
@@ -226,36 +201,36 @@ export function PlanPricing({ onBack, onGoToExtensions }: PlanPricingProps) {
   };
 
   const resetForm = () => {
-    setFormData({
+    setFormData({ // Reset form, ensure fields match new formData structure
       name: '',
       description: '',
       price: 0,
       currency: 'USD',
-      interval: 'month',
+      billing: 'monthly',
       stripePriceId: '',
       features: [''],
       maxCourses: 10,
       accessLevel: 'basic',
       isPopular: false,
-      isActive: true,
+      // isActive: true, // Not in AppPlan form data
       trialPeriodDays: 0
     });
   };
 
-  const openEditDialog = (plan: SubscriptionPlan) => {
+  const openEditDialog = (plan: AppPlan) => { // Parameter type updated to AppPlan
     setEditingPlan(plan);
     setFormData({
       name: plan.name,
       description: plan.description,
       price: plan.price,
       currency: plan.currency,
-      interval: plan.interval,
+      billing: plan.billing, // Changed from interval
       stripePriceId: plan.stripePriceId || '',
       features: [...plan.features, ''],
-      maxCourses: plan.maxCourses,
-      accessLevel: plan.accessLevel,
-      isPopular: plan.isPopular || false,
-      isActive: plan.isActive,
+      maxCourses: plan.limits.maxCourses, // Get from limits
+      accessLevel: plan.id as PlanType, // Assuming plan.id is one of 'basic', 'pro', 'enterprise'
+      isPopular: plan.popular || false,
+      // isActive: plan.isActive, // Not in AppPlan
       trialPeriodDays: plan.trialPeriodDays || 0
     });
     setShowEditDialog(true);
@@ -416,7 +391,7 @@ export function PlanPricing({ onBack, onGoToExtensions }: PlanPricingProps) {
                     <div className="text-3xl font-bold text-gray-900">
                       ${plan.price}
                       <span className="text-lg font-normal text-gray-600">
-                        /{plan.interval}
+                        /{plan.billing}
                       </span>
                     </div>
                   </div>
@@ -430,10 +405,10 @@ export function PlanPricing({ onBack, onGoToExtensions }: PlanPricingProps) {
                     </div>
                   )}
 
-                  {/* Access Level Badge */}
+                  {/* Access Level Badge (using plan.id which is PlanType) */}
                   <div className="flex justify-center">
-                    <Badge className={getAccessLevelColor(plan.accessLevel)}>
-                      {plan.accessLevel.charAt(0).toUpperCase() + plan.accessLevel.slice(1)}
+                    <Badge className={getAccessLevelColor(plan.id)}>
+                      {plan.name} {/* Display plan name, as id might be just 'basic' */}
                     </Badge>
                   </div>
 
@@ -447,10 +422,10 @@ export function PlanPricing({ onBack, onGoToExtensions }: PlanPricingProps) {
                     ))}
                   </ul>
 
-                  {/* Course Limit */}
+                  {/* Course Limit from plan.limits */}
                   <div className="pt-2 border-t border-gray-200">
                     <div className="text-sm text-gray-600">
-                      Course Access: {plan.maxCourses === 999999 ? 'Unlimited' : plan.maxCourses}
+                      Course Access: {plan.limits.maxCourses === -1 ? 'Unlimited' : plan.limits.maxCourses}
                     </div>
                   </div>
 
@@ -462,11 +437,13 @@ export function PlanPricing({ onBack, onGoToExtensions }: PlanPricingProps) {
                     </div>
                   )}
 
-                  {/* Status */}
+                  {/* Status (AppPlan does not have isActive, assume all displayed plans are active or manage status elsewhere if needed) */}
+                  {/*
                   <div className="flex items-center justify-between pt-2">
                     <span className="text-sm text-gray-600">Active</span>
-                    <Switch checked={plan.isActive} disabled />
+                    <Switch checked={true} disabled /> {}
                   </div>
+                  */}
                 </CardContent>
               </Card>
             ))}

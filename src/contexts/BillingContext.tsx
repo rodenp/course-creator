@@ -1,42 +1,50 @@
 import type React from 'react';
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { useStripe } from './StripeContext'; // Import useStripe
 import type {
   PlanType,
-  Subscription,
-  Invoice,
-  PaymentMethod,
-  BillingDetails,
+  // Subscription, // Will use ActiveSubscriptionDetails from StripeContext or derive
+  // Invoice, // Will use Invoice from StripeContext
+  // PaymentMethod, // Will use PaymentMethod from StripeContext
+  BillingDetails, // This seems specific to BillingContext's mock, might be removed or re-evaluated
   FeatureKey,
-  Plan
-} from '@/types/billing';
+  Plan as AppPlan // Renaming to avoid conflict with Stripe's Plan
+} from '@/types/billing'; // Assuming Plan here is the app-specific definition
 
-// Import the actual config and plans
-import { FEATURE_CONFIG, PLANS } from '@/types/billing';
+// Import the actual config for features
+import { FEATURE_CONFIG } from '@/types/billing'; // PLANS import will be removed
+
+// Define a simpler Subscription type for BillingContext, derived from StripeContext's data
+interface BillingSubscriptionState {
+  id: string | null; // Stripe Subscription ID
+  planId: PlanType | null; // App's plan ID (e.g., 'free', 'pro')
+  status: string | null; // e.g., 'active', 'canceled', 'trialing'
+  cancelAtPeriodEnd: boolean | null;
+}
 
 interface BillingContextType {
-  // Current subscription
-  subscription: Subscription | null;
-  currentPlan: Plan | null;
+  // Current subscription derived from StripeContext
+  subscription: BillingSubscriptionState | null;
+  currentPlan: AppPlan | null; // App-specific plan details
 
   // Feature checking
   hasFeature: (feature: FeatureKey) => boolean;
   canCreateCourse: () => boolean;
   getCourseLimit: () => number;
 
-  // Billing data
-  invoices: Invoice[];
-  paymentMethods: PaymentMethod[];
-  billingDetails: BillingDetails | null;
+  // Billing data (delegated to StripeContext, or removed if purely mock)
+  // invoices: Invoice[];
+  // paymentMethods: PaymentMethod[];
+  billingDetails: BillingDetails | null; // Keep if it has specific UI role beyond Stripe data
 
   // Actions
   upgradePlan: (planId: PlanType) => Promise<void>;
-  cancelSubscription: () => Promise<void>;
-  updatePaymentMethod: (paymentMethod: PaymentMethod) => Promise<void>;
-  downloadInvoice: (invoiceId: string) => Promise<void>;
+  cancelCurrentSubscription: () => Promise<void>; // Renamed for clarity
+  // updatePaymentMethod: (paymentMethod: PaymentMethod) => Promise<void>; // To be handled by StripeContext/Billing Portal
+  // downloadInvoice: (invoiceId: string) => Promise<void>; // To be handled by StripeContext/Billing Portal
 
   // Loading states
-  loading: boolean;
-  upgrading: boolean;
+  loadingBillingAction: boolean; // More specific loading state
 }
 
 const BillingContext = createContext<BillingContextType | undefined>(undefined);
@@ -49,382 +57,163 @@ export const useBilling = () => {
   return context;
 };
 
-// Mock data for development
-const generateMockInvoices = (): Invoice[] => {
-  return [
-    {
-      id: 'inv_001',
-      subscriptionId: 'sub_001',
-      amount: 19.00,
-      currency: 'USD',
-      status: 'paid',
-      date: new Date('2024-01-01'),
-      description: 'Pro Plan - January 2024',
-      downloadUrl: '#',
-      items: [
-        {
-          id: 'item_001',
-          description: 'Pro Plan Monthly',
-          amount: 19.00,
-          quantity: 1,
-          period: {
-            start: new Date('2024-01-01'),
-            end: new Date('2024-02-01'),
-          },
-        },
-      ],
-    },
-    {
-      id: 'inv_002',
-      subscriptionId: 'sub_001',
-      amount: 19.00,
-      currency: 'USD',
-      status: 'paid',
-      date: new Date('2024-02-01'),
-      description: 'Pro Plan - February 2024',
-      downloadUrl: '#',
-      items: [
-        {
-          id: 'item_002',
-          description: 'Pro Plan Monthly',
-          amount: 19.00,
-          quantity: 1,
-          period: {
-            start: new Date('2024-02-01'),
-            end: new Date('2024-03-01'),
-          },
-        },
-      ],
-    },
-    {
-      id: 'inv_003',
-      subscriptionId: 'sub_001',
-      amount: 19.00,
-      currency: 'USD',
-      status: 'pending',
-      date: new Date('2024-03-01'),
-      dueDate: new Date('2024-03-15'),
-      description: 'Pro Plan - March 2024',
-      items: [
-        {
-          id: 'item_003',
-          description: 'Pro Plan Monthly',
-          amount: 19.00,
-          quantity: 1,
-          period: {
-            start: new Date('2024-03-01'),
-            end: new Date('2024-04-01'),
-          },
-        },
-      ],
-    },
-  ];
-};
-
-const generateMockPaymentMethods = (): PaymentMethod[] => {
-  return [
-    {
-      id: 'pm_001',
-      type: 'card',
-      last4: '4242',
-      brand: 'visa',
-      expiryMonth: 12,
-      expiryYear: 2027,
-      isDefault: true,
-    },
-  ];
-};
-
 interface BillingProviderProps {
   children: ReactNode;
 }
 
 export const BillingProvider: React.FC<BillingProviderProps> = ({ children }) => {
-  const [subscription, setSubscription] = useState<Subscription | null>(null);
-  const [invoices, setInvoices] = useState<Invoice[]>([]);
-  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
-  const [billingDetails, setBillingDetails] = useState<BillingDetails | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [upgrading, setUpgrading] = useState(false);
-  const [userPlans, setUserPlans] = useState<Plan[]>(PLANS);
+  const stripeContext = useStripe(); // Use StripeContext
 
-  // Load user-configured plans from PlanPricing
+  const [subscription, setSubscription] = useState<BillingSubscriptionState | null>(null);
+  const [currentPlan, setCurrentPlan] = useState<AppPlan | null>(null);
+  // Mock billingDetails might remain if it serves a UI purpose not covered by Stripe's Customer
+  const [billingDetails, setBillingDetails] = useState<BillingDetails | null>({
+      name: stripeContext.customer?.name || 'User',
+      email: stripeContext.customer?.email || 'user@example.com',
+      // Address should come from Stripe Customer object if needed
+  });
+  const [loadingBillingAction, setLoadingBillingAction] = useState(false);
+
+  // Derive BillingContext's subscription and currentPlan from StripeContext
   useEffect(() => {
-    const savedPlans = localStorage.getItem('subscriptionPlans');
-    if (savedPlans) {
-      try {
-        const parsedPlans = JSON.parse(savedPlans).map((plan: any) => ({
-          ...plan,
-          createdAt: new Date(plan.createdAt),
-          updatedAt: new Date(plan.updatedAt),
-          billing: 'monthly' as const,
-          limits: {
-            maxCourses: plan.maxCourses || 10,
-            maxStudents: plan.maxStudents || 100,
-            storageGB: plan.storageGB || 5,
-            apiCalls: plan.apiCalls || 1000,
-          }
-        }));
-        console.log('💼 Loaded user-configured plans:', parsedPlans);
-        setUserPlans(parsedPlans);
-      } catch (error) {
-        console.error('Failed to load user plans:', error);
-        setUserPlans(PLANS); // Fallback to default
-      }
-    }
-  }, []);
+    if (stripeContext.customer && stripeContext.activeSubscription) {
+      const activeSub = stripeContext.activeSubscription;
+      const appPlans = stripeContext.plans; // Use plans from StripeContext
 
-  // Get current plan based on subscription - use user-configured plans
-  const currentPlan = subscription
-    ? userPlans.find(plan => plan.id === subscription.planId) || userPlans[0]
-    : userPlans[0]; // Default to basic plan
+      const derivedSubscription: BillingSubscriptionState = {
+        id: activeSub.id,
+        planId: activeSub.planId as PlanType, // Assuming planId from StripeContext matches PlanType
+        status: activeSub.status,
+        cancelAtPeriodEnd: activeSub.cancelAtPeriodEnd || false,
+      };
+      setSubscription(derivedSubscription);
 
-  // Initialize with mock data
-  useEffect(() => {
-    const initializeBilling = async () => {
-      try {
-        // In a real app, this would fetch from your backend
-        const savedSubscription = localStorage.getItem('user-subscription');
-
-        if (savedSubscription) {
-          const sub = JSON.parse(savedSubscription);
-          setSubscription({
-            ...sub,
-            currentPeriodStart: new Date(sub.currentPeriodStart),
-            currentPeriodEnd: new Date(sub.currentPeriodEnd),
-            canceledAt: sub.canceledAt ? new Date(sub.canceledAt) : undefined,
-          });
-        } else {
-          // Default to pro plan
-          const defaultSubscription: Subscription = {
-            id: 'sub_pro',
-            userId: 'user_001',
-            planId: 'pro',
-            status: 'active',
-            currentPeriodStart: new Date(),
-            currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+      const foundPlan = appPlans.find(p => p.id === activeSub.planId || p.stripePriceId === activeSub.stripePriceId) as AppPlan | undefined;
+      // Map SubscriptionPlan (from stripeService) to AppPlan (from @/types/billing)
+      if (foundPlan) {
+          const appSpecificPlan: AppPlan = {
+              id: foundPlan.id as PlanType,
+              name: foundPlan.name,
+              price: foundPlan.price, // Already a number in StripeContext's plan
+              billing: foundPlan.interval === 'year' ? 'annually' : 'monthly', // Map interval
+              stripePriceId: foundPlan.stripePriceId,
+              features: foundPlan.features,
+              limits: { // Assuming default limits or that StripeContext.plans includes these
+                  maxCourses: (foundPlan as any).maxCourses || (FEATURE_CONFIG.MAX_COURSES.defaultValue?.pro || 10), // Example access
+                  maxStudents: 1000, // Placeholder
+                  storageGB: 5, // Placeholder
+                  apiCalls: 10000, // Placeholder
+              },
+              trialPeriodDays: (foundPlan as any).trialPeriodDays
           };
-          setSubscription(defaultSubscription);
-          localStorage.setItem('user-subscription', JSON.stringify(defaultSubscription));
-        }
-
-        setInvoices(generateMockInvoices());
-        setPaymentMethods(generateMockPaymentMethods());
-        setBillingDetails({
-          name: 'John Doe',
-          email: 'john@example.com',
-          address: {
-            line1: '123 Main St',
-            city: 'New York',
-            state: 'NY',
-            postalCode: '10001',
-            country: 'US',
-          },
-        });
-      } catch (error) {
-        console.error('Failed to initialize billing:', error);
-      } finally {
-        setLoading(false);
+          setCurrentPlan(appSpecificPlan);
+      } else {
+          setCurrentPlan(null); // Or a default plan
       }
-    };
 
-    initializeBilling();
-  }, []);
-
-  // Handle successful payment upgrades from URL parameters
-  useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const upgradeSuccess = urlParams.get('upgrade_success');
-    const planId = urlParams.get('plan');
-
-    if (upgradeSuccess === 'true' && planId) {
-      console.log('🎉 Payment successful! Upgrading to plan:', planId);
-
-      // Find the target plan
-      const targetPlan = userPlans.find(plan => plan.id === planId);
-      if (targetPlan) {
-        // Update subscription immediately
-        const newSubscription: Subscription = {
-          id: `sub_${planId}`,
-          userId: 'user_001',
-          planId,
-          status: 'active',
-          currentPeriodStart: new Date(),
-          currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        };
-
-        setSubscription(newSubscription);
-        localStorage.setItem('user-subscription', JSON.stringify(newSubscription));
-
-        // Clean up URL parameters
-        const newUrl = window.location.origin + window.location.pathname;
-        window.history.replaceState({}, document.title, newUrl);
-
-        console.log('✅ Subscription updated to:', targetPlan.name);
-      }
+    } else if (stripeContext.customer && !stripeContext.activeSubscription) {
+      // Customer exists but no active Stripe subscription - could be on a "default free" tier
+      setSubscription({ id: null, planId: 'free', status: 'active', cancelAtPeriodEnd: false }); // Example default
+      const freePlan = stripeContext.plans.find(p => p.id === 'free' || p.price === 0) as AppPlan | undefined;
+      if (freePlan) setCurrentPlan(freePlan); else setCurrentPlan(null);
+    } else {
+      setSubscription(null);
+      setCurrentPlan(null);
     }
-  }, [userPlans]);
+  }, [stripeContext.customer, stripeContext.activeSubscription, stripeContext.plans]);
 
-  // Feature checking
+  // Update billingDetails when customer info changes in StripeContext
+  useEffect(() => {
+    if (stripeContext.customer) {
+        setBillingDetails(prev => ({
+            ...prev,
+            name: stripeContext.customer?.name || prev?.name || 'User',
+            email: stripeContext.customer?.email || prev?.email || 'user@example.com',
+            // address: stripeContext.customer?.address // If StripeCustomer had address
+        }));
+    }
+  }, [stripeContext.customer]);
+
+
+  // Removed: useEffect for initializing with mock data (invoices, paymentMethods)
+  // Removed: useEffect for loading userPlans (now from StripeContext)
+  // Removed: useEffect for handling 'upgrade_success' URL params (StripeContext.initiateUpgrade success/cancel URLs should handle this, then reload data)
+
+  // Feature checking (uses currentPlan which is now derived from StripeContext)
   const hasFeature = (feature: FeatureKey): boolean => {
     if (!subscription || !currentPlan) return false;
-    return FEATURE_CONFIG[feature]?.plans.includes(subscription.planId) || false;
+    // Ensure currentPlan.id is of type PlanType for FEATURE_CONFIG
+    const planIdForFeatureCheck = currentPlan.id as PlanType;
+    return FEATURE_CONFIG[feature]?.plans.includes(planIdForFeatureCheck) || false;
   };
 
   const canCreateCourse = (): boolean => {
     if (!subscription || !currentPlan) return false;
-
-    // Check if user has unlimited courses
-    if (currentPlan.limits.maxCourses === -1) return true;
-
-    // In a real app, you'd check the actual course count
+    if (currentPlan.limits.maxCourses === -1) return true; // Unlimited
+    // In a real app, currentCourseCount should come from a reliable source (e.g., app backend or context)
+    // For now, keeping localStorage example but acknowledging its limitations.
     const currentCourseCount = JSON.parse(localStorage.getItem('courses') || '[]').length;
     return currentCourseCount < currentPlan.limits.maxCourses;
   };
 
   const getCourseLimit = (): number => {
-    return currentPlan?.limits.maxCourses || 0;
+    return currentPlan?.limits.maxCourses ?? 0;
   };
 
   // Actions
   const upgradePlan = async (planId: PlanType): Promise<void> => {
-    console.log('🔥🔥🔥 BILLING CONTEXT upgradePlan called with planId:', planId);
-    setUpgrading(true);
+    console.log('BillingContext: Delegating upgradePlan to StripeContext for planId:', planId);
+    setLoadingBillingAction(true);
     try {
-      // Find the plan to upgrade to
-      const targetPlan = userPlans.find(plan => plan.id === planId);
-      if (!targetPlan) {
-        throw new Error(`Plan ${planId} not found`);
-      }
-
-      console.log('💳 BillingContext: Upgrading to plan:', targetPlan);
-
-      // Validate that paid plans have Stripe price IDs
-      if (targetPlan.price > 0 && !targetPlan.stripePriceId) {
-        throw new Error(`Plan "${targetPlan.name}" requires a Stripe Price ID. Please configure it in Plan Pricing.`);
-      }
-
-      // For free plans, just update subscription immediately
-      if (targetPlan.price === 0) {
-        console.log('🆓 Free plan upgrade - updating subscription directly');
-        const newSubscription: Subscription = {
-          id: `sub_${planId}`,
-          userId: 'user_001',
-          planId,
-          status: 'active',
-          currentPeriodStart: new Date(),
-          currentPeriodEnd: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-        };
-
-        setSubscription(newSubscription);
-        localStorage.setItem('user-subscription', JSON.stringify(newSubscription));
-        return;
-      }
-
-      // For paid plans, use Stripe checkout
-      console.log('💰 Paid plan upgrade - redirecting to Stripe checkout');
-      console.log('🔑 Using Stripe Price ID:', targetPlan.stripePriceId);
-
-      // Get Stripe service from window
-      const stripeService = (window as any).stripeService;
-      if (!stripeService) {
-        throw new Error('Stripe service not available. Please configure Stripe in Extensions first.');
-      }
-
-      // Create checkout session with the user-configured price ID
-      const checkoutResult = await stripeService.createCheckoutSession({
-        priceId: targetPlan.stripePriceId,
-        successUrl: `${window.location.origin}?upgrade_success=true&plan=${planId}`,
-        cancelUrl: `${window.location.origin}?upgrade_cancelled=true`,
-        customerEmail: 'demo@example.com', // In real app, get from user context
-        mode: 'subscription',
-        trialPeriodDays: targetPlan.trialPeriodDays && targetPlan.trialPeriodDays > 0 ? targetPlan.trialPeriodDays : undefined
-      });
-
-      if (checkoutResult.error) {
-        throw new Error(`Stripe checkout failed: ${checkoutResult.error}`);
-      }
-
-      console.log('✅ Checkout session created, redirecting to:', checkoutResult.url);
-
-      // Always redirect - no more demo mode detection
-
-
-
-      // Always redirect to the checkout URL
-      if (checkoutResult.url) {
-        console.log('🚀 Redirecting to Stripe checkout:', checkoutResult.url);
-        console.log('🔍 URL type:', checkoutResult.url.includes('checkout.stripe.com') ? 'Real Stripe' : 'Other');
-
-        // Force redirect to Stripe checkout
-        window.location.href = checkoutResult.url;
-      } else {
-        throw new Error('No checkout URL received from Stripe');
-      }
-
+      // Pass stripeCustomerId and email from StripeContext's customer object
+      await stripeContext.initiateUpgrade(
+        planId,
+        stripeContext.customer?.stripeCustomerId,
+        stripeContext.customer?.email
+      );
+      // StripeContext.initiateUpgrade will handle redirection or local state update for free plans.
+      // After redirection and success, StripeContext.loadCustomerData should be triggered
+      // by the success page or upon app reload, which will then update BillingContext's subscription.
     } catch (error) {
-      console.error('❌ Plan upgrade failed:', error);
+      console.error('❌ BillingContext: Plan upgrade failed via StripeContext:', error);
+      // Error should be handled by StripeContext and potentially displayed by UI components
+      throw error; // Re-throw for the calling component to handle if needed
+    } finally {
+      setLoadingBillingAction(false);
+    }
+  };
+
+  const cancelCurrentSubscription = async (): Promise<void> => {
+    if (!stripeContext.activeSubscription?.id) {
+      console.warn("BillingContext: No active Stripe subscription to cancel.");
+      // Or, if there's a local "free" subscription, handle that:
+      if (subscription?.planId === 'free' && subscription.id?.startsWith('free_sub_')) {
+          setSubscription(null);
+          setCurrentPlan(null);
+          // Optionally clear demo_customer if it was only for the free plan.
+          // localStorage.removeItem('demo_customer');
+          console.log("BillingContext: Cleared local free subscription.");
+          return;
+      }
+      throw new Error("No active Stripe subscription ID found to cancel.");
+    }
+
+    console.log('BillingContext: Delegating cancelSubscription to StripeContext for subId:', stripeContext.activeSubscription.id);
+    setLoadingBillingAction(true);
+    try {
+      await stripeContext.cancelSubscription(stripeContext.activeSubscription.id, false); // false for cancel_at_period_end
+      // StripeContext.cancelSubscription will call loadCustomerData, which updates
+      // stripeContext.activeSubscription, and thus BillingContext's subscription state.
+    } catch (error) {
+      console.error('❌ BillingContext: Subscription cancellation failed via StripeContext:', error);
       throw error;
     } finally {
-      setUpgrading(false);
+      setLoadingBillingAction(false);
     }
   };
 
-  const cancelSubscription = async (): Promise<void> => {
-    if (!subscription) return;
-
-    try {
-      // In a real app, this would call your backend/Stripe
-      const canceledSubscription = {
-        ...subscription,
-        status: 'canceled' as const,
-        canceledAt: new Date(),
-      };
-
-      setSubscription(canceledSubscription);
-      localStorage.setItem('user-subscription', JSON.stringify(canceledSubscription));
-    } catch (error) {
-      console.error('Failed to cancel subscription:', error);
-      throw error;
-    }
-  };
-
-  const updatePaymentMethod = async (paymentMethod: PaymentMethod): Promise<void> => {
-    try {
-      // In a real app, this would update via Stripe
-      setPaymentMethods(prev => [
-        paymentMethod,
-        ...prev.map(pm => ({ ...pm, isDefault: false }))
-      ]);
-    } catch (error) {
-      console.error('Failed to update payment method:', error);
-      throw error;
-    }
-  };
-
-  const downloadInvoice = async (invoiceId: string): Promise<void> => {
-    try {
-      // In a real app, this would download from Stripe
-      const invoice = invoices.find(inv => inv.id === invoiceId);
-      if (!invoice) throw new Error('Invoice not found');
-
-      // Create a mock PDF download
-      const pdfContent = `Invoice ${invoice.id}\nAmount: $${invoice.amount}\nDate: ${invoice.date.toDateString()}\nStatus: ${invoice.status}`;
-      const blob = new Blob([pdfContent], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `invoice-${invoice.id}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Failed to download invoice:', error);
-      throw error;
-    }
-  };
+  // Removed: updatePaymentMethod (should be via Stripe Billing Portal, accessed through StripeContext)
+  // Removed: downloadInvoice (should be via Stripe Billing Portal or StripeContext providing invoice URLs)
 
   return (
     <BillingContext.Provider value={{
@@ -433,22 +222,19 @@ export const BillingProvider: React.FC<BillingProviderProps> = ({ children }) =>
       hasFeature,
       canCreateCourse,
       getCourseLimit,
-      invoices,
-      paymentMethods,
-      billingDetails,
+      // invoices: stripeContext.invoices, // Provide directly from StripeContext if needed by consumers of BillingContext
+      // paymentMethods: stripeContext.paymentMethods, // Same as above
+      billingDetails, // Kept if it serves a distinct UI purpose
       upgradePlan,
-      cancelSubscription,
-      updatePaymentMethod,
-      downloadInvoice,
-      loading,
-      upgrading,
+      cancelCurrentSubscription,
+      loadingBillingAction,
     }}>
       {children}
     </BillingContext.Provider>
   );
 };
 
-// Feature gate hook
+// Feature gate hook (remains the same)
 export const useFeatureGate = (feature: FeatureKey) => {
   const { hasFeature } = useBilling();
   return {

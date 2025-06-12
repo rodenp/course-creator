@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { CoursePricing } from './CoursePricing';
 import { useStripe } from '@/contexts/StripeContext';
+import { stripeService as globalStripeServiceInstance } from '@/services/stripe'; // Import directly
 import type { Course, CoursePricingPlan } from '@/types';
 
 interface CoursePurchaseProps {
@@ -26,9 +27,10 @@ interface CoursePurchaseProps {
 }
 
 export function CoursePurchase({ course, onClose, onPurchaseComplete }: CoursePurchaseProps) {
-  const { createCheckoutSession, loading: stripeLoading } = useStripe();
+  // useStripe can be used for global state like isConfigured, or potentially customer email for prefill
+  const stripeContext = useStripe();
   const [selectedPlan, setSelectedPlan] = useState<CoursePricingPlan | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(false); // This can be stripeContext.loading if global loading is appropriate
   const [showConfirmation, setShowConfirmation] = useState(false);
 
   if (!course.stripeSettings?.enabled || !course.isPaid) {
@@ -65,18 +67,17 @@ export function CoursePurchase({ course, onClose, onPurchaseComplete }: CoursePu
     try {
       setLoading(true);
 
-      // Initialize Stripe service with course-specific settings if different from global
+      // Initialize/Reconfigure global Stripe service with course-specific settings if different
       await initializeCourseStripe(course.stripeSettings);
 
-      // Create checkout session using the existing Stripe service
-      const sessionId = await createCourseCheckoutSession(course, selectedPlan);
+      // Create checkout session using the reconfigured global Stripe service
+      const sessionDetails = await createCourseCheckoutSessionDirect(course, selectedPlan);
 
-      // Use the global Stripe service to redirect to checkout
-      const stripeService = (window as any).stripeService;
-      if (stripeService) {
-        await stripeService.redirectToCheckout(sessionId);
+      // Use the global Stripe service instance to redirect to checkout
+      if (sessionDetails.sessionId) {
+        await globalStripeServiceInstance.redirectToCheckout(sessionDetails.sessionId);
       } else {
-        throw new Error('Stripe service not available');
+        throw new Error('Checkout session ID not found.');
       }
 
       // If successful, notify parent component
@@ -91,68 +92,72 @@ export function CoursePurchase({ course, onClose, onPurchaseComplete }: CoursePu
   };
 
   const initializeCourseStripe = async (stripeSettings: NonNullable<typeof course.stripeSettings>) => {
-    // Check if we need to reconfigure Stripe with course-specific settings
-    const stripeService = (window as any).stripeService;
-    const currentConfig = stripeService?.getConfig();
+    // Reconfigure the global stripe instance if course-specific keys are provided and different.
+    // This uses the configureStripe method from StripeContext which updates the global stripeService instance.
+    const currentGlobalConfig = globalStripeServiceInstance.getConfig(); // Use imported service
 
-    // Only reconfigure if the course has different keys than what's currently configured
-    if (!currentConfig ||
-        currentConfig.publishableKey !== stripeSettings.publishableKey ||
-        currentConfig.secretKey !== stripeSettings.secretKey) {
+    if (stripeSettings.publishableKey && stripeSettings.secretKey &&
+        (!currentGlobalConfig ||
+         currentGlobalConfig.publishableKey !== stripeSettings.publishableKey ||
+         currentGlobalConfig.secretKey !== stripeSettings.secretKey)) {
 
-      console.log('🔧 Configuring Stripe with course-specific settings:', {
-        courseId: course.id,
-        testMode: stripeSettings.testMode,
-        publishableKey: stripeSettings.publishableKey.substring(0, 20) + '...'
-      });
-
-      await stripeService?.initialize({
+      console.log('🔧 CoursePurchase: Reconfiguring global Stripe service with course-specific settings for course:', course.id);
+      await stripeContext.configureStripe({ // Use context to ensure global state is updated
         publishableKey: stripeSettings.publishableKey,
         secretKey: stripeSettings.secretKey,
-        webhookSecret: stripeSettings.webhookSecret,
-        testMode: stripeSettings.testMode
+        webhookSecret: stripeSettings.webhookSecret, // Use course specific or global? For now, course.
+        testMode: stripeSettings.testMode,
       });
+    } else {
+      console.log('🔧 CoursePurchase: Using existing global Stripe configuration for course:', course.id);
+      if (!globalStripeServiceInstance.isConfigured()) {
+        throw new Error("Stripe service is not configured globally, and no course-specific keys were sufficient to initialize.");
+      }
     }
   };
 
-  const createCourseCheckoutSession = async (course: Course, plan: CoursePricingPlan): Promise<string> => {
+  // Renamed to avoid confusion with stripeContext.createCheckoutSession (which is deprecated and calls initiateUpgrade)
+  const createCourseCheckoutSessionDirect = async (course: Course, plan: CoursePricingPlan): Promise<{sessionId?: string, error?: string}> => {
     const stripeSettings = course.stripeSettings!;
 
-    // Use course-specific success/cancel URLs if configured, otherwise use defaults
-    const successUrl = stripeSettings.successUrl || `${window.location.origin}/course/${course.id}/welcome`;
+    if (!globalStripeServiceInstance.isConfigured()) {
+      throw new Error('Stripe service is not configured. Cannot create course checkout session.');
+    }
+    if (!plan.stripePriceId) {
+      throw new Error(`Plan "${plan.name}" does not have a Stripe Price ID configured.`);
+    }
+
+    const successUrl = stripeSettings.successUrl || `${window.location.origin}/course/${course.id}/purchase-success?course_id=${course.id}&plan_id=${plan.id}&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = stripeSettings.cancelUrl || `${window.location.origin}/course/${course.id}`;
 
-    // Create checkout session with course-specific settings using the global Stripe service
-    const stripeService = (window as any).stripeService;
+    // Use stripeContext.customer for email and potentially Stripe Customer ID
+    const customerEmail = stripeContext.customer?.email || 'customer@example.com'; // Fallback, ideally get from logged-in user
+    const stripeCustomerId = stripeContext.customer?.stripeCustomerId;
 
-    if (!stripeService) {
-      throw new Error('Stripe service not available');
-    }
 
-    // Ensure we have a valid price ID
-    if (!plan.stripePriceId) {
-      throw new Error('Plan does not have a Stripe price ID configured');
-    }
-
-    const sessionResponse = await stripeService.createCheckoutSession({
+    // Directly use the imported globalStripeServiceInstance
+    const sessionResponse = await globalStripeServiceInstance.createCheckoutSession({
       priceId: plan.stripePriceId,
-      customerEmail: 'customer@example.com', // In real app, get from user context
-      successUrl: `${successUrl}?session_id={CHECKOUT_SESSION_ID}`,
-      cancelUrl,
+      customerEmail: customerEmail,
+      customerId: stripeCustomerId, // Pass Stripe Customer ID if available
+      successUrl: successUrl,
+      cancelUrl: cancelUrl,
       mode: plan.interval === 'one_time' ? 'payment' : 'subscription',
-      trialPeriodDays: plan.trialDays
+      trialPeriodDays: plan.trialDays,
     });
 
-    console.log('✅ Course checkout session created:', {
+    if (!sessionResponse.success || !sessionResponse.sessionId) {
+        console.error('❌ Course checkout session creation failed via globalStripeServiceInstance:', sessionResponse.error);
+        throw new Error(sessionResponse.error || 'Failed to create course checkout session.');
+    }
+
+    console.log('✅ Course checkout session created via globalStripeServiceInstance:', {
       sessionId: sessionResponse.sessionId,
       courseId: course.id,
       planId: plan.id,
-      planName: plan.name,
-      price: plan.price,
-      currency: plan.currency
     });
 
-    return sessionResponse.sessionId;
+    return { sessionId: sessionResponse.sessionId };
   };
 
   const formatCurrency = (amount: number, currency: string) => {

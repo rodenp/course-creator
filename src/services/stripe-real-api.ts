@@ -53,7 +53,7 @@ class RealStripeAPI {
     success: boolean;
     error?: string;
   }> {
-    if (!this.stripe || !this._isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -156,7 +156,7 @@ class RealStripeAPI {
 
   // Retrieve a real checkout session
   async retrieveCheckoutSession(sessionId: string): Promise<Stripe.Checkout.Session | null> {
-    if (!this.stripe || !this._isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -187,7 +187,7 @@ class RealStripeAPI {
     name?: string;
     metadata?: Record<string, string>;
   }): Promise<Stripe.Customer | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -219,7 +219,8 @@ class RealStripeAPI {
 
   // Retrieve a real subscription
   async retrieveSubscription(subscriptionId: string): Promise<Stripe.Subscription | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -246,7 +247,7 @@ class RealStripeAPI {
 
   // List customer subscriptions
   async listCustomerSubscriptions(customerId: string): Promise<Stripe.Subscription[]> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -271,7 +272,7 @@ class RealStripeAPI {
 
   // Cancel a subscription
   async cancelSubscription(subscriptionId: string, atPeriodEnd = true): Promise<Stripe.Subscription | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -305,7 +306,7 @@ class RealStripeAPI {
 
   // Resume a subscription
   async resumeSubscription(subscriptionId: string): Promise<Stripe.Subscription | null> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       throw new Error('Real Stripe API not configured');
     }
 
@@ -336,7 +337,7 @@ class RealStripeAPI {
 
   // Test the connection to Stripe
   async testConnection(): Promise<boolean> {
-    if (!this.stripe || !this.isConfigured) {
+    if (!this.stripe || !this.isConfigured()) {
       return false;
     }
 
@@ -398,6 +399,64 @@ class RealStripeAPI {
   // Get Stripe instance (for advanced usage)
   getStripeInstance(): Stripe | null {
     return this.stripe;
+  }
+
+  // List payment methods for a customer
+  async listPaymentMethods(customerId: string): Promise<Stripe.PaymentMethod[]> {
+    if (!this.stripe || !this.isConfigured()) {
+      throw new Error('Real Stripe API not configured');
+    }
+    try {
+      console.log('💳 Listing payment methods for customer:', customerId);
+      const paymentMethods = await this.stripe.paymentMethods.list({
+        customer: customerId,
+        type: 'card', // Assuming we only care about card payment methods for now
+      });
+      console.log('✅ Payment methods retrieved:', paymentMethods.data.length);
+      return paymentMethods.data;
+    } catch (error) {
+      console.error('❌ Failed to list payment methods:', error);
+      return [];
+    }
+  }
+
+  // List invoices for a customer
+  async listInvoices(customerId: string, params?: Stripe.InvoiceListParams): Promise<Stripe.Invoice[]> {
+    if (!this.stripe || !this.isConfigured()) {
+      throw new Error('Real Stripe API not configured');
+    }
+    try {
+      console.log('🧾 Listing invoices for customer:', customerId);
+      const invoices = await this.stripe.invoices.list({
+        customer: customerId,
+        limit: params?.limit || 20, // Default limit
+        ...params,
+      });
+      console.log('✅ Invoices retrieved:', invoices.data.length);
+      return invoices.data;
+    } catch (error) {
+      console.error('❌ Failed to list invoices:', error);
+      return [];
+    }
+  }
+
+  // Create a billing portal session
+  async createBillingPortalSession(customerId: string, returnUrl: string): Promise<Stripe.BillingPortal.Session | null> {
+    if (!this.stripe || !this.isConfigured()) {
+      throw new Error('Real Stripe API not configured');
+    }
+    try {
+      console.log('🚪 Creating billing portal session for customer:', customerId);
+      const session = await this.stripe.billingPortal.sessions.create({
+        customer: customerId,
+        return_url: returnUrl,
+      });
+      console.log('✅ Billing portal session created:', session.url);
+      return session;
+    } catch (error) {
+      console.error('❌ Failed to create billing portal session:', error);
+      return null;
+    }
   }
 }
 
